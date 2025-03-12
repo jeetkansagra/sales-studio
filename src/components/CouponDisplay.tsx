@@ -2,25 +2,87 @@
 import React, { useState, useEffect } from "react";
 import CouponCard from "./CouponCard";
 import { Button } from "@/components/ui/button";
-import { Coupon, getNextCoupon, getUserCoupon, storeCoupon, formatTimeLeft, TIME_RESTRICTION } from "@/utils/couponUtils";
+import { 
+  Coupon, 
+  CouponClaim,
+  getCookieToken, 
+  getIpAddress, 
+  formatTimeLeft, 
+  TIME_RESTRICTION,
+  mapDbCouponToAppCoupon,
+  getTimeLeftFromTimestamp
+} from "@/utils/couponUtils";
 import { toast } from "sonner";
 import { Gift, RefreshCw } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
 
 const CouponDisplay: React.FC = () => {
   const [currentCoupon, setCurrentCoupon] = useState<Coupon | null>(null);
   const [isNew, setIsNew] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number>(0);
   const [formattedTime, setFormattedTime] = useState<string>("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const cookieToken = getCookieToken();
 
-  // Check for existing coupon on component mount
+  // Check for existing claims on component mount
   useEffect(() => {
-    const { coupon, timeLeft } = getUserCoupon();
-    if (coupon) {
-      setCurrentCoupon(coupon);
-      setTimeLeft(timeLeft);
+    async function checkExistingClaim() {
+      try {
+        // Get the most recent claim for this user's cookie token
+        const { data: claimData, error: claimError } = await supabase
+          .from('claims')
+          .select('*, coupons(*)')
+          .eq('cookie_token', cookieToken)
+          .order('claimed_at', { ascending: false })
+          .limit(1);
+
+        if (claimError) throw claimError;
+
+        if (claimData && claimData.length > 0) {
+          const claim = claimData[0];
+          const coupon = claim.coupons;
+          
+          // Calculate time left
+          const timeRemaining = getTimeLeftFromTimestamp(claim.claimed_at);
+          
+          if (timeRemaining > 0) {
+            // User has an active coupon
+            setCurrentCoupon(mapDbCouponToAppCoupon(coupon));
+            setTimeLeft(timeRemaining);
+          } else {
+            // Coupon has expired
+            setCurrentCoupon(null);
+          }
+        }
+      } catch (error) {
+        console.error("Error checking existing claim:", error);
+        toast.error("Failed to check for existing coupons");
+      } finally {
+        setLoading(false);
+      }
     }
-  }, []);
+
+    checkExistingClaim();
+
+    // Set up real-time subscription for claims table
+    const claimsChannel = supabase
+      .channel('public:claims')
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'claims',
+        filter: `cookie_token=eq.${cookieToken}`
+      }, (payload) => {
+        console.log('New claim created:', payload);
+        // Refresh the coupon data when a new claim is made
+        checkExistingClaim();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(claimsChannel);
+    };
+  }, [cookieToken]);
 
   // Update the countdown timer
   useEffect(() => {
@@ -49,41 +111,93 @@ const CouponDisplay: React.FC = () => {
     }
   }, [timeLeft]);
 
-  const handleGetCoupon = () => {
-    // Check if user already has a valid coupon
-    const { coupon, timeLeft } = getUserCoupon();
-    
-    if (coupon) {
-      // User has a valid coupon, return it with time left
-      setCurrentCoupon(coupon);
-      setTimeLeft(timeLeft);
-      setIsNew(false);
-      toast.info("You already have an active coupon");
-      return;
-    }
+  const handleGetCoupon = async () => {
+    try {
+      setLoading(true);
 
-    // Simulate loading
-    setLoading(true);
-    
-    // Simulate network delay for better UX
-    setTimeout(() => {
-      // Get the next coupon in the round-robin sequence
-      const newCoupon = getNextCoupon();
+      // Check if user already has a valid coupon
+      if (timeLeft > 0 && currentCoupon) {
+        toast.info("You already have an active coupon");
+        return;
+      }
+
+      // Get IP address for tracking
+      const ipAddress = await getIpAddress();
       
-      // Store the coupon with current timestamp
-      storeCoupon(newCoupon);
+      // Get an available coupon (not claimed yet)
+      const { data: availableCoupons, error: couponError } = await supabase
+        .from('coupons')
+        .select('*')
+        .eq('claimed', false)
+        .limit(1);
+
+      if (couponError) throw couponError;
+      
+      if (!availableCoupons || availableCoupons.length === 0) {
+        // If all coupons are claimed, reset one
+        const { data: anyCoupon, error: resetError } = await supabase
+          .from('coupons')
+          .select('*')
+          .limit(1);
+          
+        if (resetError) throw resetError;
+        
+        if (anyCoupon && anyCoupon.length > 0) {
+          // Reset this coupon to be available again
+          const { error: updateError } = await supabase
+            .from('coupons')
+            .update({ claimed: false })
+            .eq('id', anyCoupon[0].id);
+            
+          if (updateError) throw updateError;
+          
+          // Use this coupon
+          availableCoupons.push(anyCoupon[0]);
+        } else {
+          toast.error("No coupons available at this time");
+          return;
+        }
+      }
+      
+      const couponToUse = availableCoupons[0];
+      
+      // Create a claim record
+      const newClaim: CouponClaim = {
+        coupon_id: couponToUse.id,
+        cookie_token: cookieToken,
+        ip_address: ipAddress || undefined
+      };
+      
+      const { error: claimError } = await supabase
+        .from('claims')
+        .insert(newClaim);
+        
+      if (claimError) throw claimError;
+      
+      // Mark coupon as claimed
+      const { error: updateError } = await supabase
+        .from('coupons')
+        .update({ claimed: true })
+        .eq('id', couponToUse.id);
+        
+      if (updateError) throw updateError;
       
       // Update the state
-      setCurrentCoupon(newCoupon);
+      const appCoupon = mapDbCouponToAppCoupon(couponToUse);
+      setCurrentCoupon(appCoupon);
       setTimeLeft(TIME_RESTRICTION);
       setIsNew(true);
-      setLoading(false);
       
       toast.success("New coupon claimed successfully!");
       
       // Reset the "new" status after animation
       setTimeout(() => setIsNew(false), 2000);
-    }, 800);
+    } catch (error) {
+      console.error("Error claiming coupon:", error);
+      toast.error("Failed to claim coupon");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

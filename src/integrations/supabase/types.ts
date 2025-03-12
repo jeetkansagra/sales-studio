@@ -9,7 +9,59 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
-      [_ in never]: never
+      claims: {
+        Row: {
+          claimed_at: string
+          cookie_token: string
+          coupon_id: string
+          id: string
+          ip_address: string | null
+        }
+        Insert: {
+          claimed_at?: string
+          cookie_token: string
+          coupon_id: string
+          id?: string
+          ip_address?: string | null
+        }
+        Update: {
+          claimed_at?: string
+          cookie_token?: string
+          coupon_id?: string
+          id?: string
+          ip_address?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "claims_coupon_id_fkey"
+            columns: ["coupon_id"]
+            isOneToOne: false
+            referencedRelation: "coupons"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      coupons: {
+        Row: {
+          claimed: boolean | null
+          code: string
+          created_at: string
+          id: string
+        }
+        Insert: {
+          claimed?: boolean | null
+          code: string
+          created_at?: string
+          id?: string
+        }
+        Update: {
+          claimed?: boolean | null
+          code?: string
+          created_at?: string
+          id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

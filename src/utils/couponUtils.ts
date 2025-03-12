@@ -1,98 +1,77 @@
+
 // Coupon data type
 export interface Coupon {
+  id?: string;
   code: string;
   description: string;
   discount: string;
   validUntil?: string;
+  claimed?: boolean;
 }
 
-// Available coupons
-export const availableCoupons: Coupon[] = [
-  {
-    code: "SAVE10",
+// Coupon claim type
+export interface CouponClaim {
+  id?: string;
+  coupon_id: string;
+  ip_address?: string;
+  cookie_token: string;
+  claimed_at?: string;
+}
+
+// Available coupon descriptions and discounts map
+export const couponDetails: Record<string, { description: string; discount: string }> = {
+  "SAVE10": {
     description: "10% off your entire purchase",
     discount: "10%",
   },
-  {
-    code: "SAVE20",
+  "SAVE20": {
     description: "20% off your entire purchase",
     discount: "20%",
   },
-  {
-    code: "FREESHIP",
+  "FREESHIP": {
     description: "Free shipping on your order",
     discount: "Free Shipping",
   },
-  {
-    code: "BOGO50",
+  "BOGO50": {
     description: "Buy one, get one 50% off",
     discount: "50% off second item",
   },
-  {
-    code: "EXTRA15",
+  "EXTRA15": {
     description: "Extra 15% off sale items",
     discount: "15% off sale items",
   },
-];
+};
 
 // Local storage keys
-const LS_COUPON_KEY = "user-coupon";
+const LS_COOKIE_TOKEN_KEY = "coupon-cookie-token";
 const LS_TIMESTAMP_KEY = "coupon-timestamp";
-const LS_LAST_IDX_KEY = "last-coupon-idx";
 
 // Time restriction in milliseconds (1 hour)
 export const TIME_RESTRICTION = 60 * 60 * 1000;
 
-// Get the current global index
-export const getLastCouponIndex = (): number => {
-  const storedIndex = localStorage.getItem(LS_LAST_IDX_KEY);
-  return storedIndex ? parseInt(storedIndex, 10) : -1;
-};
-
-// Update the global index
-export const updateLastCouponIndex = (index: number): void => {
-  localStorage.setItem(LS_LAST_IDX_KEY, index.toString());
-};
-
-// Get a new coupon in round-robin fashion
-export const getNextCoupon = (): Coupon => {
-  const lastIndex = getLastCouponIndex();
-  const nextIndex = (lastIndex + 1) % availableCoupons.length;
-  updateLastCouponIndex(nextIndex);
-  return availableCoupons[nextIndex];
-};
-
-// Check if the user has a coupon and if it's still valid
-export const getUserCoupon = (): { coupon: Coupon | null; timeLeft: number } => {
-  const storedCoupon = localStorage.getItem(LS_COUPON_KEY);
-  const storedTimestamp = localStorage.getItem(LS_TIMESTAMP_KEY);
+// Generate a unique cookie token if one doesn't exist
+export const getCookieToken = (): string => {
+  let token = localStorage.getItem(LS_COOKIE_TOKEN_KEY);
   
-  // If no coupon or timestamp, return null
-  if (!storedCoupon || !storedTimestamp) {
-    return { coupon: null, timeLeft: 0 };
+  if (!token) {
+    token = Math.random().toString(36).substring(2, 15) + 
+            Math.random().toString(36).substring(2, 15);
+    localStorage.setItem(LS_COOKIE_TOKEN_KEY, token);
   }
   
-  const timestamp = parseInt(storedTimestamp, 10);
-  const currentTime = Date.now();
-  const elapsedTime = currentTime - timestamp;
-  
-  // If the time restriction has passed, return null
-  if (elapsedTime >= TIME_RESTRICTION) {
-    return { coupon: null, timeLeft: 0 };
-  }
-  
-  // Otherwise, return the stored coupon and time left
-  const timeLeft = TIME_RESTRICTION - elapsedTime;
-  return { 
-    coupon: JSON.parse(storedCoupon) as Coupon, 
-    timeLeft 
-  };
+  return token;
 };
 
-// Store a coupon for the user
-export const storeCoupon = (coupon: Coupon): void => {
-  localStorage.setItem(LS_COUPON_KEY, JSON.stringify(coupon));
-  localStorage.setItem(LS_TIMESTAMP_KEY, Date.now().toString());
+// Get user's IP address (this is a simple approach - in production you might use a service)
+export const getIpAddress = async (): Promise<string | null> => {
+  try {
+    const response = await fetch('https://api.ipify.org?format=json');
+    const data = await response.json();
+    return data.ip;
+  } catch (error) {
+    console.error('Failed to get IP address:', error);
+    return null;
+  }
 };
 
 // Format milliseconds to minutes and seconds
@@ -102,8 +81,38 @@ export const formatTimeLeft = (milliseconds: number): string => {
   return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
 };
 
-// Clear user's coupon (for testing purposes)
-export const clearUserCoupon = (): void => {
-  localStorage.removeItem(LS_COUPON_KEY);
+// Calculate time left until a user can claim another coupon
+export const getTimeLeftFromTimestamp = (timestamp: string): number => {
+  const claimTime = new Date(timestamp).getTime();
+  const currentTime = Date.now();
+  const elapsedTime = currentTime - claimTime;
+  
+  if (elapsedTime >= TIME_RESTRICTION) {
+    return 0;
+  }
+  
+  return TIME_RESTRICTION - elapsedTime;
+};
+
+// Map database coupon to app coupon format
+export const mapDbCouponToAppCoupon = (dbCoupon: any): Coupon => {
+  const code = dbCoupon.code;
+  const details = couponDetails[code] || { 
+    description: "Special offer", 
+    discount: "Special discount" 
+  };
+
+  return {
+    id: dbCoupon.id,
+    code: code,
+    description: details.description,
+    discount: details.discount,
+    claimed: dbCoupon.claimed
+  };
+};
+
+// For dev purposes: reset the cookie token
+export const resetCookieToken = (): void => {
+  localStorage.removeItem(LS_COOKIE_TOKEN_KEY);
   localStorage.removeItem(LS_TIMESTAMP_KEY);
 };
